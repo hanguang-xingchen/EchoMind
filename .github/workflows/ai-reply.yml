@@ -116,9 +116,9 @@ jobs:
               "max_tokens": 2000
             }')
 
-          # 调用 DashScope 国际站 API
+          # 调用 DashScope API
           RESPONSE=$(curl -s -w "\n%{http_code}" \
-            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions" \
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions" \
             -H "Authorization: Bearer ${{ secrets.DASHSCOPE_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD")
