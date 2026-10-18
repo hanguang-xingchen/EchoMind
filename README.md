@@ -21,12 +21,6 @@
 
 AI 会同时参考你引用的历史倾诉和你最近的倾诉记录。
 
-## 部署说明
-
-1. Fork 或克隆此仓库
-2. 在 GitHub Settings → Secrets 中添加 `DASHSCOPE_API_KEY`（百炼控制台的 API 密钥）
-3. 协作者权限：Settings → Collaborators，添加可信任的人
-
 ## 关于
 
 HanTing（含听/倾听）是一个公益项目，希望为需要倾诉的人提供一个安静的空间。
