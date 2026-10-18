@@ -129,23 +129,34 @@ jobs:
           echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
 
           if [ "$HTTP_CODE" = "200" ]; then
-            AI_REPLY=$(echo "$BODY" | jq -r '.choices[0].message.content')
-            echo "reply=$AI_REPLY" >> $GITHUB_OUTPUT
+            AI_REPLY=$(echo "$BODY" | jq -r '.choices[0].message.content // empty')
+            if [ -n "$AI_REPLY" ]; then
+              echo "success=true" >> $GITHUB_OUTPUT
+              # 用 heredoc 安全处理多行内容
+              echo "reply<<ENDOFREPLY" >> $GITHUB_OUTPUT
+              echo "$AI_REPLY" >> $GITHUB_OUTPUT
+              echo "ENDOFREPLY" >> $GITHUB_OUTPUT
+            else
+              echo "::error::API 返回 200 但无回复内容，响应体: $BODY"
+              echo "success=false" >> $GITHUB_OUTPUT
+            fi
           else
-            echo "reply=" >> $GITHUB_OUTPUT
+            echo "::error::API 调用失败，HTTP 状态码: $HTTP_CODE，响应体: $BODY"
+            echo "success=false" >> $GITHUB_OUTPUT
+            echo "error_body=$BODY" >> $GITHUB_OUTPUT
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 评论回复
-        if: steps.api-call.outputs.reply != ''
+        if: steps.api-call.outputs.success == 'true'
         run: |
           gh issue comment ${{ github.event.issue.number }} --body "${{ steps.api-call.outputs.reply }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 兜底评论（API 失败时）
-        if: steps.api-call.outputs.reply == ''
+        if: steps.api-call.outputs.success != 'true'
         run: |
           gh issue comment ${{ github.event.issue.number }} --body "抱歉，倾听者暂时无法回复。如果你现在需要帮助，可以拨打心理援助热线：400-161-9995。你的感受很重要，请照顾好自己。"
         env:
