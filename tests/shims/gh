@@ -23,5 +23,22 @@ case "$sub $action" in
     done
     if [ -n "$jqf" ]; then jq -r "$jqf" "$fix"; else cat "$fix"; fi
     ;;
+  "api "*)
+    path="${2:-}"
+    case "$path" in
+      *stargazers*) f="${ECHOMIND_FIXTURE_DIR}/stargazers.json" ;;
+      */issues/*/comments*)
+        n=$(printf '%s' "$path" | sed 's#.*/issues/\([0-9]*\)/comments.*#\1#')
+        f="${ECHOMIND_FIXTURE_DIR}/comments_${n}.json" ;;
+      *) f="${ECHOMIND_FIXTURE_DIR}/api.json" ;;
+    esac
+    [ -f "$f" ] || exit 1
+    jqf=""
+    while [ $# -gt 0 ]; do
+      if [ "$1" = "--jq" ]; then jqf="${2:-}"; break; fi
+      shift
+    done
+    if [ -n "$jqf" ]; then jq -r "$jqf" "$f"; else cat "$f"; fi
+    ;;
   *) exit 0 ;;
 esac

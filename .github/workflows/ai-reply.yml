@@ -2,58 +2,87 @@ name: AI 倾听者回复
 
 on:
   issues:
-    types: [labeled]
+    types: [opened, labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 试跑的 Issue 编号（dry-run，不写回仓库）
+        required: true
+        type: string
 
 permissions:
   issues: write
   contents: read
 
+concurrency:
+  group: ai-reply-${{ github.event.issue.number || github.event.inputs.issue_number }}
+  cancel-in-progress: false
+
 jobs:
   ai-reply:
-    if: github.event.label.name == '倾诉'
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ECHOMIND_REPO: ${{ github.repository }}
+      ECHOMIND_EVENT: ${{ github.event.action || 'opened' }}
+      ECHOMIND_ISSUE_NUMBER: ${{ github.event.issue.number || github.event.inputs.issue_number }}
+      ECHOMIND_ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+      ECHOMIND_ISSUE_TITLE: ${{ github.event.issue.title }}
+      ECHOMIND_LABEL: ${{ github.event.label.name }}
+      ECHOMIND_BODY_FILE: ${{ runner.temp }}/issue_body.md
+      ECHOMIND_LABEL_REQUIRED: 倾诉
+      ECHOMIND_COOLDOWN_MINUTES: 10
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
 
-      - name: 锁定 Issue
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ECHOMIND_ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: gh issue lock "$ECHOMIND_ISSUE_NUMBER" --reason resolved
-
       - name: 落地 Issue 正文
         env:
-          ISSUE_BODY: ${{ github.event.issue.body }}
-        run: printf '%s' "$ISSUE_BODY" > "$RUNNER_TEMP/issue_body.md"
+          ISSUE_BODY_EVENT: ${{ github.event.issue.body }}
+        run: |
+          if [ -n "${ISSUE_BODY_EVENT:-}" ]; then
+            printf '%s' "$ISSUE_BODY_EVENT" > "$ECHOMIND_BODY_FILE"
+          else
+            gh issue view "$ECHOMIND_ISSUE_NUMBER" --json body --jq .body > "$ECHOMIND_BODY_FILE"
+          fi
+
+      - name: 补全试跑参数
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          gh issue view "$ECHOMIND_ISSUE_NUMBER" --json title,author,user \
+            --jq '[.title, .author.login] | @tsv' > "$RUNNER_TEMP/meta.tsv"
+          IFS=$'\t' read -r t a < "$RUNNER_TEMP/meta.tsv"
+          echo "ECHOMIND_ISSUE_TITLE=$t" >> "$GITHUB_ENV"
+          echo "ECHOMIND_ISSUE_AUTHOR=$a" >> "$GITHUB_ENV"
+
+      - name: 准入判定
+        id: admit
+        continue-on-error: true
+        run: bash .github/autoreply.sh admit
 
       - name: 装配历史上下文
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ECHOMIND_ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
-          ECHOMIND_BODY_FILE: ${{ runner.temp }}/issue_body.md
+        if: steps.admit.outputs.admit == 'proceed'
         run: bash .github/autoreply.sh context
 
       - name: 生成倾听回复
         id: generate
-        continue-on-error: true
+        if: steps.admit.outputs.admit == 'proceed'
         env:
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
-          ECHOMIND_ISSUE_TITLE: ${{ github.event.issue.title }}
-          ECHOMIND_BODY_FILE: ${{ runner.temp }}/issue_body.md
         run: bash .github/autoreply.sh generate
 
       - name: 评论回复
         if: steps.generate.outputs.success == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ECHOMIND_ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: gh issue comment "$ECHOMIND_ISSUE_NUMBER" --body-file "$RUNNER_TEMP/reply.md"
 
+      - name: 回复成功后再锁定
+        if: steps.generate.outputs.success == 'true'
+        run: gh issue lock "$ECHOMIND_ISSUE_NUMBER" --reason resolved
+
+      - name: 未点 Star 的温和提示
+        if: steps.admit.outputs.admit == 'reject' && steps.admit.outputs.reject_reason == 'no_star'
+        run: gh issue comment "$ECHOMIND_ISSUE_NUMBER" --body-file .github/rejected.md
+
       - name: 兜底评论
-        if: steps.generate.outputs.success != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ECHOMIND_ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: |
-          gh issue comment "$ECHOMIND_ISSUE_NUMBER" --body "抱歉，倾听者暂时无法回复。如果你现在需要帮助，可以拨打心理援助热线：400-161-9995。你的感受很重要，请照顾好自己。"
+        if: failure() && steps.generate.outcome == 'failure'
+        run: gh issue comment "$ECHOMIND_ISSUE_NUMBER" --body-file .github/fallback.md

@@ -78,6 +78,79 @@ cmd_context(){
   say info "上下文装配完成：历史=${has_history} 引用条数=$(printf '%s' "$refs" | wc -w | tr -d ' ')"
 }
 
+# ── 准入判定：决定这条 Issue 要不要占用一次模型调用 ─────────────
+cmd_admit() {
+  STAGE="admit"
+  need ECHOMIND_EVENT
+  need ECHOMIND_REPO
+  need ECHOMIND_ISSUE_NUMBER
+  need ECHOMIND_ISSUE_AUTHOR
+
+  local repo="${ECHOMIND_REPO}" author="${ECHOMIND_ISSUE_AUTHOR}" number="${ECHOMIND_ISSUE_NUMBER}"
+  local event="${ECHOMIND_EVENT}" label="${ECHOMIND_LABEL:-}"
+  local required="${ECHOMIND_LABEL_REQUIRED:-倾诉}"
+  local api="repos/${repo}"
+
+  reject() {
+    write_output admit "reject"
+    write_output reject_reason "$1"
+    say info "准入拒绝：$1"
+    exit "$EXIT_REJECT"
+  }
+
+  if [ "$event" = "labeled" ] && [ "$label" != "$required" ]; then
+    reject label
+  fi
+
+  local replied
+  replied="$("$GH" api "${api}/issues/${number}/comments" \
+      --jq '[.[] | select(.user.login == "github-actions[bot]")] | length' 2>/dev/null || echo 0)"
+  if [ "${replied:-0}" -gt 0 ]; then
+    reject answered
+  fi
+
+  local state=unknown page=1 per=100 listed star_max
+  star_max="${ECHOMIND_STAR_PAGES_MAX:-5}"
+  while [ "$page" -le "$star_max" ]; do
+    listed="$("$GH" api "${api}/stargazers?per_page=${per}&page=${page}" --jq '.[].login' 2>/dev/null || true)"
+    if [ -z "$listed" ]; then
+      break
+    fi
+    if printf '%s\n' "$listed" | grep -qxF "$author"; then
+      state="yes"
+      break
+    fi
+    if [ "$(printf '%s\n' "$listed" | grep -c .)" -lt "$per" ]; then
+      state="no"
+      break
+    fi
+    page=$((page + 1))
+  done
+  if [ "$state" = "no" ]; then
+    reject no_star
+  elif [ "$state" = "unknown" ]; then
+    say warn "无法确证 Star 状态，按保守策略放行"
+    echo "::notice::Star 校验未完成，已放行"
+  fi
+
+  local cooldown="${ECHOMIND_COOLDOWN_MINUTES:-10}"
+  if [ "$cooldown" != "0" ]; then
+    local cutoff others num hit
+    cutoff="$(date -u -d "-${cooldown} minutes" +%Y-%m-%dT%H:%M:%SZ)"
+    others="$("$GH" issue list --repo "$repo" --state all --limit 10 --author "$author" --json number 2>/dev/null || true)"
+    for num in $(printf '%s' "$others" | jq -r '.[].number' 2>/dev/null | grep -v "^${number}$" || true); do
+      hit="$("$GH" api "${api}/issues/${num}/comments" \
+          --jq "[.[] | select(.user.login == \"github-actions[bot]\" and .created_at >= \"${cutoff}\")] | length" 2>/dev/null || echo 0)"
+      if [ "${hit:-0}" -gt 0 ]; then
+        reject cooldown
+      fi
+    done
+  fi
+
+  write_output admit "proceed"
+  say info "准入通过"
+}
+
 # ── 构造请求并调用模型 ────────────────────────────────────────
 cmd_generate(){
   STAGE="generate"
@@ -133,7 +206,8 @@ cmd_generate(){
 
 STAGE="dispatch"
 case "${1:-}" in
+  admit)    cmd_admit ;;
   context)  cmd_context ;;
   generate) cmd_generate ;;
-  *) die "用法: autoreply.sh <context|generate>" "$EXIT_CONFIG" ;;
+  *) die "用法: autoreply.sh <admit|context|generate>" "$EXIT_CONFIG" ;;
 esac

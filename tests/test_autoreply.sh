@@ -20,10 +20,13 @@ setup(){
   export ECHOMIND_API_BASE="https://example.invalid"
   export DASHSCOPE_API_KEY="fake-test-key"
   export ECHOMIND_ISSUE_NUMBER="8" ECHOMIND_ISSUE_AUTHOR="octocat" ECHOMIND_ISSUE_TITLE="今天很糟"
+  export ECHOMIND_REPO="someowener/somerepo" ECHOMIND_EVENT="labeled" ECHOMIND_LABEL="倾诉"
+  export ECHOMIND_LABEL_REQUIRED="倾诉" ECHOMIND_COOLDOWN_MINUTES="10"
   export ECHOMIND_BODY_FILE="$WORK/issue_body.md"
   export ECHOMIND_CONTEXT_FILE="$WORK/context.md" ECHOMIND_REPLY_FILE="$WORK/reply.md" ECHOMIND_PAYLOAD_FILE="$WORK/payload.json"
-  export ECHOMIND_FIXTURE_DIR="$PWD/tests/fixtures"
-  export ECHOMIND_FIXTURE_ISSUE_LIST="$PWD/tests/fixtures/issue_list_empty.json"
+  cp -r "$PWD/tests/fixtures" "$WORK/fixtures"
+  export ECHOMIND_FIXTURE_DIR="$WORK/fixtures"
+  export ECHOMIND_FIXTURE_ISSUE_LIST="$WORK/fixtures/issue_list_empty.json"
   export ECHOMIND_FAKE_HTTP="200" ECHOMIND_FAKE_REPLY="好的，我在听。"
 }
 teardown(){ rm -rf "$WORK"; }
@@ -100,6 +103,64 @@ has "引用块含编号与标题" "#3: 第三次尝试" "$CTX"
 has "引用块含该条正文" "那次我几乎想放弃了。" "$CTX"
 teardown
 
-echo
+echo " " "通过 $PASS 项，失败 $FAIL 项"
+
+echo "=== 7. admit 准入判定 ==="
+setup
+printf '%s' '正文' > "$ECHOMIND_BODY_FILE"
+echo '[]' > "$ECHOMIND_FIXTURE_DIR/comments_8.json"
+echo '[{"login":"other"}]' > "$ECHOMIND_FIXTURE_DIR/stargazers.json"
+echo '[]' > "$ECHOMIND_FIXTURE_ISSUE_LIST"
+bash "$SCRIPT" admit >/dev/null 2>&1; rc=$?
+eq "未 star 时退出 2（拒绝但不算故障）" "2" "$rc"
+eq "拒绝原因记为 no_star" "no_star" "$(outval reject_reason)"
+teardown
+
+setup
+echo '[{"login":"octocat"}]' > "$ECHOMIND_FIXTURE_DIR/stargazers.json"
+echo '[]' > "$ECHOMIND_FIXTURE_DIR/comments_8.json"
+echo '[]' > "$ECHOMIND_FIXTURE_ISSUE_LIST"
+bash "$SCRIPT" admit >/dev/null 2>&1; rc=$?
+eq "已 star 且无历史回复时放行" "0" "$rc"
+eq "放行标记写入输出" "proceed" "$(outval admit)"
+teardown
+
+setup
+echo '[{"login":"octocat"}]' > "$ECHOMIND_FIXTURE_DIR/stargazers.json"
+echo '[{"body":"回复","user":{"login":"github-actions[bot]"}}]' > "$ECHOMIND_FIXTURE_DIR/comments_8.json"
+bash "$SCRIPT" admit >/dev/null 2>&1; rc=$?
+eq "本条已有 bot 回复时不重复回复" "2" "$rc"
+eq "拒绝原因记为 answered" "answered" "$(outval reject_reason)"
+teardown
+
+setup
+echo '[{"login":"octocat"}]' > "$ECHOMIND_FIXTURE_DIR/stargazers.json"
+echo '[]' > "$ECHOMIND_FIXTURE_DIR/comments_8.json"
+recent=$(date -u -d '-2 minutes' +%Y-%m-%dT%H:%M:%SZ)
+echo '[{"number":7,"updatedAt":"'"$recent"'"}]' > "$ECHOMIND_FIXTURE_ISSUE_LIST"
+echo '[{"body":"回复","user":{"login":"github-actions[bot]"},"created_at":"'"$recent"'"}]' > "$ECHOMIND_FIXTURE_DIR/comments_7.json"
+bash "$SCRIPT" admit >/dev/null 2>&1; rc=$?
+eq "同作者两分钟前刚被回复时进入冷却" "2" "$rc"
+eq "拒绝原因记为 cooldown" "cooldown" "$(outval reject_reason)"
+teardown
+
+setup
+rm -f "$ECHOMIND_FIXTURE_DIR/stargazers.json"
+echo '[]' > "$ECHOMIND_FIXTURE_DIR/comments_8.json"
+bash "$SCRIPT" admit >/dev/null 2>&1; rc=$?
+eq "star 查询失败时保守放行" "0" "$rc"
+teardown
+
+setup
+echo '[{"login":"octocat"}]' > "$ECHOMIND_FIXTURE_DIR/stargazers.json"
+echo '[]' > "$ECHOMIND_FIXTURE_DIR/comments_8.json"
+ECHOMIND_LABEL="bug" bash "$SCRIPT" admit >/dev/null 2>&1; rc=$?
+eq "打错标签不触发回复" "2" "$rc"
+eq "拒绝原因记为 label" "label" "$(outval reject_reason)"
+ECHOMIND_EVENT="opened" ECHOMIND_LABEL="" bash "$SCRIPT" admit >/dev/null 2>&1; rc=$?
+eq "opened 事件没有标签字段也照常放行" "0" "$rc"
+teardown
+
+
 echo "通过 $PASS 项，失败 $FAIL 项"
 [ "$FAIL" -eq 0 ]
