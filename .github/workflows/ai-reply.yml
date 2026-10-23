@@ -16,148 +16,44 @@ jobs:
       - name: 检出仓库
         uses: actions/checkout@v4
 
-      - name: 先锁定 issue
-        run: gh issue lock ${{ github.event.issue.number }} --reason resolved
+      - name: 锁定 Issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ECHOMIND_ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: gh issue lock "$ECHOMIND_ISSUE_NUMBER" --reason resolved
 
-      - name: 读取系统提示词
-        id: prompt
-        run: |
-          PROMPT=$(cat .github/prompt.md)
-          echo "prompt<<EOF" >> $GITHUB_OUTPUT
-          echo "$PROMPT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+      - name: 落地 Issue 正文
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: printf '%s' "$ISSUE_BODY" > "$RUNNER_TEMP/issue_body.md"
 
-      - name: 自动获取同用户最近一条历史倾诉
-        id: auto-history
-        run: |
-          AUTHOR=${{ github.event.issue.user.login }}
-          HISTORY=$(gh issue list --state closed --limit 10 --json number,title,body,user --jq ".[] | select(.user.login == \"$AUTHOR\")" | head -1)
-          if [ -n "$HISTORY" ]; then
-            NUM=$(echo "$HISTORY" | jq -r '.number')
-            TITLE=$(echo "$HISTORY" | jq -r '.title')
-            BODY=$(echo "$HISTORY" | jq -r '.body')
-            echo "has_history=true" >> $GITHUB_OUTPUT
-            echo "history_text<<EOF" >> $GITHUB_OUTPUT
-            echo "--- 这位用户之前也倾诉过（#${NUM}: ${TITLE}） ---" >> $GITHUB_OUTPUT
-            echo "$BODY" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-          else
-            echo "has_history=false" >> $GITHUB_OUTPUT
-          fi
+      - name: 装配历史上下文
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ECHOMIND_ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          ECHOMIND_BODY_FILE: ${{ runner.temp }}/issue_body.md
+        run: bash .github/autoreply.sh context
 
-      - name: 解析手动引用 [引用:#数字]
-        id: manual-refs
-        run: |
-          ISSUE_BODY="${{ github.event.issue.body }}"
-          REFS=$(echo "$ISSUE_BODY" | grep -oP '\[引用:#\d+\]' | grep -oP '\d+' || true)
-          REF_TEXT=""
-          for NUM in $REFS; do
-            TITLE=$(gh issue view $NUM --json title --jq '.title' 2>/dev/null || echo "未知标题")
-            BODY=$(gh issue view $NUM --json body --jq '.body' 2>/dev/null || echo "无法获取内容")
-            REF_TEXT="${REF_TEXT}\n\n--- 引用的历史倾诉（#${NUM}: ${TITLE}） ---\n${BODY}"
-          done
-          if [ -n "$REFS" ]; then
-            echo "has_refs=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_refs=false" >> $GITHUB_OUTPUT
-          fi
-          echo "ref_text<<EOF" >> $GITHUB_OUTPUT
-          echo -e "$REF_TEXT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+      - name: 生成倾听回复
+        id: generate
+        continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 拼接完整 prompt 并调用 DashScope API
-        id: api-call
-        run: |
-          PROMPT="${{ steps.prompt.outputs.prompt }}"
-          ISSUE_TITLE="${{ github.event.issue.title }}"
-          ISSUE_BODY="${{ github.event.issue.body }}"
-
-          # 构建用户消息
-          USER_MSG="标题：${ISSUE_TITLE}\n\n内容：${ISSUE_BODY}"
-
-          # 拼接历史上下文
-          CONTEXT=""
-          if [ "${{ steps.auto-history.outputs.has_history }}" = "true" ]; then
-            CONTEXT="${{ steps.auto-history.outputs.history_text }}"
-          fi
-          if [ "${{ steps.manual-refs.outputs.has_refs }}" = "true" ]; then
-            CONTEXT="${CONTEXT}${{ steps.manual-refs.outputs.ref_text }}"
-          fi
-
-          # 完整 system prompt
-          FULL_PROMPT="${PROMPT}"
-          if [ -n "$CONTEXT" ]; then
-            FULL_PROMPT="${PROMPT}\n\n以下是一些相关的历史倾诉记录，供你参考：\n${CONTEXT}"
-          fi
-
-          # 构建 API 请求体
-          PAYLOAD=$(jq -n \
-            --arg prompt "$FULL_PROMPT" \
-            --arg user_msg "$USER_MSG" \
-            '{
-              "model": "qwen-plus",
-              "messages": [
-                {
-                  "role": "system",
-                  "content": $prompt
-                },
-                {
-                  "role": "user",
-                  "content": $user_msg
-                }
-              ],
-              "temperature": 0.9,
-              "max_tokens": 2000
-            }')
-
-          # 调用 DashScope API
-          RESPONSE=$(curl -s -w "\n%{http_code}" \
-            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions" \
-            -H "Authorization: Bearer ${{ secrets.DASHSCOPE_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD")
-
-          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-          BODY=$(echo "$RESPONSE" | sed '$d')
-
-          echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
-
-          if [ "$HTTP_CODE" = "200" ]; then
-            AI_REPLY=$(echo "$BODY" | jq -r '.choices[0].message.content // empty')
-            if [ -n "$AI_REPLY" ]; then
-              echo "success=true" >> $GITHUB_OUTPUT
-              # 用 heredoc 安全处理多行内容
-              echo "reply<<ENDOFREPLY" >> $GITHUB_OUTPUT
-              echo "$AI_REPLY" >> $GITHUB_OUTPUT
-              echo "ENDOFREPLY" >> $GITHUB_OUTPUT
-            else
-              echo "::error::API 返回 200 但无回复内容，响应体: $BODY"
-              echo "success=false" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "::error::API 调用失败，HTTP 状态码: $HTTP_CODE，响应体: $BODY"
-            echo "success=false" >> $GITHUB_OUTPUT
-            echo "error_body=$BODY" >> $GITHUB_OUTPUT
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          ECHOMIND_ISSUE_TITLE: ${{ github.event.issue.title }}
+          ECHOMIND_BODY_FILE: ${{ runner.temp }}/issue_body.md
+        run: bash .github/autoreply.sh generate
 
       - name: 评论回复
-        if: steps.api-call.outputs.success == 'true'
-        run: |
-          gh issue comment ${{ github.event.issue.number }} --body "${{ steps.api-call.outputs.reply }}"
+        if: steps.generate.outputs.success == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ECHOMIND_ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: gh issue comment "$ECHOMIND_ISSUE_NUMBER" --body-file "$RUNNER_TEMP/reply.md"
 
-      - name: 兜底评论（API 失败时）
-        if: steps.api-call.outputs.success != 'true'
-        run: |
-          gh issue comment ${{ github.event.issue.number }} --body "抱歉，倾听者暂时无法回复。如果你现在需要帮助，可以拨打心理援助热线：400-161-9995。你的感受很重要，请照顾好自己。"
+      - name: 兜底评论
+        if: steps.generate.outputs.success != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ECHOMIND_ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue comment "$ECHOMIND_ISSUE_NUMBER" --body "抱歉，倾听者暂时无法回复。如果你现在需要帮助，可以拨打心理援助热线：400-161-9995。你的感受很重要，请照顾好自己。"

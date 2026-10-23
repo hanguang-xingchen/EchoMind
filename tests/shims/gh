@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# 测试替身：只在测试里使用，模拟 gh 的 issue list / issue view 读取行为。
+set -u
+sub="${1:-}"; action="${2:-}"
+case "$sub $action" in
+  "issue list")
+    [ -f "${ECHOMIND_FIXTURE_ISSUE_LIST:-}" ] || exit 0
+    jqf=""
+    while [ $# -gt 0 ]; do
+      if [ "$1" = "--jq" ]; then jqf="${2:-}"; break; fi
+      shift
+    done
+    if [ -n "$jqf" ]; then jq -r "$jqf" "$ECHOMIND_FIXTURE_ISSUE_LIST"; else cat "$ECHOMIND_FIXTURE_ISSUE_LIST"; fi
+    exit 0 ;;
+  "issue view")
+    num="$3"
+    fix="${ECHOMIND_FIXTURE_DIR:-}/issue_${num}.json"
+    [ -f "$fix" ] || exit 1
+    jqf=""
+    while [ $# -gt 0 ]; do
+      if [ "$1" = "--jq" ]; then jqf="${2:-}"; break; fi
+      shift
+    done
+    if [ -n "$jqf" ]; then jq -r "$jqf" "$fix"; else cat "$fix"; fi
+    ;;
+  *) exit 0 ;;
+esac
