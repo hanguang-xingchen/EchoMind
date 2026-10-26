@@ -3,19 +3,13 @@ name: AI 倾听者回复
 on:
   issues:
     types: [opened, labeled]
-  workflow_dispatch:
-    inputs:
-      issue_number:
-        description: 试跑的 Issue 编号（dry-run，不写回仓库）
-        required: true
-        type: string
 
 permissions:
   issues: write
   contents: read
 
 concurrency:
-  group: ai-reply-${{ github.event.issue.number || github.event.inputs.issue_number }}
+  group: ai-reply-${{ github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
@@ -26,11 +20,11 @@ jobs:
       ECHOMIND_REPO: ${{ github.repository }}
       ECHOMIND_REPO_OWNER: ${{ github.repository_owner }}
       ECHOMIND_EVENT: ${{ github.event.action || 'opened' }}
-      ECHOMIND_ISSUE_NUMBER: ${{ github.event.issue.number || github.event.inputs.issue_number }}
+      ECHOMIND_ISSUE_NUMBER: ${{ github.event.issue.number }}
       ECHOMIND_ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
       ECHOMIND_ISSUE_TITLE: ${{ github.event.issue.title }}
       ECHOMIND_LABEL: ${{ github.event.label.name }}
-      ECHOMIND_BODY_FILE: ${{ runner.temp }}/issue_body.md
+      ECHOMIND_BODY_FILE: /tmp/issue_body.md
       ECHOMIND_LABEL_REQUIRED: 倾诉
       ECHOMIND_COOLDOWN_MINUTES: 10
     steps:
@@ -46,15 +40,6 @@ jobs:
           else
             gh issue view "$ECHOMIND_ISSUE_NUMBER" --json body --jq .body > "$ECHOMIND_BODY_FILE"
           fi
-
-      - name: 补全试跑参数
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          gh issue view "$ECHOMIND_ISSUE_NUMBER" --json title,author,user \
-            --jq '[.title, .author.login] | @tsv' > "$RUNNER_TEMP/meta.tsv"
-          IFS=$'\t' read -r t a < "$RUNNER_TEMP/meta.tsv"
-          echo "ECHOMIND_ISSUE_TITLE=$t" >> "$GITHUB_ENV"
-          echo "ECHOMIND_ISSUE_AUTHOR=$a" >> "$GITHUB_ENV"
 
       - name: 准入判定
         id: admit
