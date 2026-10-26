@@ -98,6 +98,7 @@ cmd_admit() {
     reject label
   fi
 
+  # 已回复判定
   local replied
   replied="$("$GH" api "${api}/issues/${number}/comments" \
       --jq '[.[] | select(.user.login == "github-actions[bot]")] | length' 2>/dev/null || echo 0)"
@@ -105,30 +106,11 @@ cmd_admit() {
     reject answered
   fi
 
-  local state=unknown page=1 per=100 listed star_max
-  star_max="${ECHOMIND_STAR_PAGES_MAX:-5}"
-  while [ "$page" -le "$star_max" ]; do
-    listed="$("$GH" api "${api}/stargazers?per_page=${per}&page=${page}" --jq '.[].login' 2>/dev/null || true)"
-    if [ -z "$listed" ]; then
-      break
-    fi
-    if printf '%s\n' "$listed" | grep -qxF "$author"; then
-      state="yes"
-      break
-    fi
-    if [ "$(printf '%s\n' "$listed" | grep -c .)" -lt "$per" ]; then
-      state="no"
-      break
-    fi
-    page=$((page + 1))
-  done
-  if [ "$state" = "no" ]; then
-    reject no_star
-  elif [ "$state" = "unknown" ]; then
-    say warn "无法确证 Star 状态，按保守策略放行"
-    echo "::notice::Star 校验未完成，已放行"
-  fi
+  # 已取消 Star 判定：按自觉机制处理，避免 owner / stargazer 语义导致误拒
+  say info "已取消 Star 判定，按自觉机制继续"
+  echo "::notice::已取消 Star 判定，按自觉机制处理"
 
+  # 冷却期判定
   local cooldown="${ECHOMIND_COOLDOWN_MINUTES:-10}"
   if [ "$cooldown" != "0" ]; then
     local cutoff others num hit
@@ -167,7 +149,7 @@ cmd_context(){
 
   body_text=""
   [ -f "$BODY_FILE" ] && body_text="$(cat "$BODY_FILE")"
-  refs="$(printf '%s' "$body_text" | grep -oP '\[引用:#\d+\]' | grep -oP '\d+' | sort -u || true)"
+  refs="$(printf '%s' "$body_text" | grep -oP '\\[引用:#\\d+\\]' | grep -oP '\\d+' | sort -u || true)"
   for n in $refs; do
     [ "$n" = "$number" ] && continue
     owner="$("$GH" issue view "$n" --json author --jq '.author.login' 2>/dev/null || echo '')"
@@ -245,7 +227,7 @@ render_system(){
   out="${out//\{\{visit_note\}\}/$visit_note}"
   out="${out//\{\{relationship_note\}\}/$relation}"
   local leftover
-  leftover="$(printf '%s' "$out" | grep -oE '\{\{[a-z_]+\}\}' | sort -u | tr '\n' ' ' || true)"
+  leftover="$(printf '%s' "$out" | grep -oE '\\{\\{[a-z_]+\\}\\}' | sort -u | tr '\n' ' ' || true)"
   [ -n "$leftover" ] && say warn "场景模板含未登记的变量，已原样保留：$leftover"
 
   local persona
