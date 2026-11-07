@@ -60,8 +60,6 @@ days_since(){ local v="${1:-}"; [ -n "$v" ] || { printf '0'; return 0; }
   local then now; then="$(date -u -d "$v" +%s 2>/dev/null || echo 0)"; now="$(date -u +%s)"
   printf '%s' "$(( (now - then) / 86400 ))"; }
 
-visitor_code(){ printf '%s' "${1:-anon}" | cksum | awk '{ printf "%04X", $1 % 65536 }'; }
-
 # 去掉 Issue 表单渲染出的字段标题行，只留下人真正写下的话
 clean_body(){
   printf '%s\n' "${1:-}" | sed '/^###[[:space:]]/d' \
@@ -218,7 +216,7 @@ render_system(){
   if [ -n "$owner" ] && [ "$author" = "$owner" ]; then
     relation="TA 是这个空间搭建的人，此刻也只是来歇一口气的。"
   fi
-  label_code="来客 $(visitor_code "$author")"
+  label_code="${author}"
 
   local tpl out
   [ -f "$CONTEXT_TEMPLATE" ] || die "找不到场景模板 $CONTEXT_TEMPLATE" "$EXIT_CONFIG"
