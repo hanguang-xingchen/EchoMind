@@ -54,12 +54,15 @@ jobs:
         if: steps.admit.outputs.admit == 'proceed'
         run: gh issue lock "$ECHOMIND_ISSUE_NUMBER" --reason resolved
 
+      
       - name: 生成倾听回复
         id: generate
         if: steps.admit.outputs.admit == 'proceed'
         env:
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          ECHOMIND_MODEL: ${{ vars.ECHOMIND_MODEL }}
         run: bash .github/autoreply.sh generate
+  
 
       - name: 评论回复
         if: steps.generate.outputs.success == 'true'
